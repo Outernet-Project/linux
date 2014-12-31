@@ -30,12 +30,17 @@
 #include "ds3000.h"
 #include "ds3000_firmware.h"
 
-static int debug=1;
+static int debug;
+module_param(debug, int, 0644);
+MODULE_PARM_DESC(debug, "turn on debugging (default: 0)");
 
 #define dprintk(args...) \
 	do { \
-		if (debug) \
+		if (debug) { \
+			printk(KERN_DEBUG "DS3000: "); \
 			printk(args); \
+			printk("\n"); \
+		} \
 	} while (0)
 
 /* as of March 2009 current DS3000 firmware version is 1.78 */
@@ -2131,9 +2136,6 @@ static struct dvb_frontend_ops ds3000_ops = {
 	.set_frontend = ds3000_set_frontend,
 	.tune = ds3000_tune,
 };
-
-module_param(debug, int, 0644);
-MODULE_PARM_DESC(debug, "Activates frontend debugging (default:0)");
 
 MODULE_DESCRIPTION("DVB Frontend module for Montage Technology "
 			"DS3000/TS2020 hardware");
