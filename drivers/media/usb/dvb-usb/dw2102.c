@@ -1104,7 +1104,7 @@ static struct stv0900_config prof_7500_stv0900_config = {
 
 static struct ds3000_config su3000_ds3000_config = {
 	.demod_address = 0x68,
-	.ci_mode = 1,
+	.ci_mode = 0,
 	.set_lock_led = dw210x_led_ctrl,
 };
 
@@ -1366,15 +1366,15 @@ static int su3000_frontend_attach(struct dvb_usb_adapter *d)
 	if (d->fe_adap[0].fe == NULL)
 		return -EIO;
 
-	if (dvb_attach(ts2020_attach, d->fe_adap[0].fe,
-				&dw2104_ts2020_config,
-				&d->dev->i2c_adap)) {
+//	if (dvb_attach(ts2020_attach, d->fe_adap[0].fe,
+//				&dw2104_ts2020_config,
+//				&d->dev->i2c_adap)) {
 		info("Attached DS3000/TS2020!\n");
 		return 0;
-	}
+//	}
 
-	info("Failed to attach DS3000/TS2020!\n");
-	return -EIO;
+//	info("Failed to attach DS3000/TS2020!\n");
+//	return -EIO;
 }
 
 static int m88rs2000_frontend_attach(struct dvb_usb_adapter *d)
