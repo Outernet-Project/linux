@@ -1,8 +1,8 @@
 /*
-    Montage Technology DS3000 - DVBS/S2 Demodulator driver
-    Copyright (C) 2009-2012 Konstantin Dimitrov <kosio.dimitrov@gmail.com>
+    Montage Technology DS3000/TS2020 - DVBS/S2 Demodulator/Tuner driver
+    Copyright (C) 2009 Konstantin Dimitrov <kosio.dimitrov@gmail.com>
 
-    Copyright (C) 2009-2012 TurboSight.com
+    Copyright (C) 2009 TurboSight.com
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -27,28 +27,46 @@
 #include <linux/firmware.h>
 
 #include "dvb_frontend.h"
-#include "ts2020.h"
 #include "ds3000.h"
+#include "ds3000_firmware.h"
 
 static int debug;
+module_param(debug, int, 0644);
+MODULE_PARM_DESC(debug, "turn on debugging (default: 0)");
 
 #define dprintk(args...) \
 	do { \
-		if (debug) \
+		if (debug) { \
+			printk(KERN_DEBUG "DS3000: "); \
 			printk(args); \
+			printk("\n"); \
+		} \
 	} while (0)
 
 /* as of March 2009 current DS3000 firmware version is 1.78 */
 /* DS3000 FW v1.78 MD5: a32d17910c4f370073f9346e71d34b80 */
 #define DS3000_DEFAULT_FIRMWARE "dvb-fe-ds3000.fw"
 
+#define DS300X_DEFAULT_FIRMWARE "dvb-fe-ds300x.fw"
+#define DS3103_DEFAULT_FIRMWARE "dvb-fe-ds3103.fw"
+
+#define TUNER_M88TS2020 0x2020
+#define TUNER_M88TS2022 0x2022
+#define TUNER_UNKNOW 0xFFFF
+
+#define FeDmdId_DS3103 0x3103
+#define FeDmdId_DS302B 0x302B
+#define FeDmdId_DS300X 0x3000
+#define FeDmdId_UNKNOW 0xFFFF
+
 #define DS3000_SAMPLE_RATE 96000 /* in kHz */
+#define DS3000_XTAL_FREQ   27000 /* in kHz */
 
 /* Register values to initialise the demod in DVB-S mode */
 static u8 ds3000_dvbs_init_tab[] = {
 	0x23, 0x05,
 	0x08, 0x03,
-	0x0c, 0x00,
+	0x0c, 0x02,
 	0x21, 0x54,
 	0x25, 0x82,
 	0x27, 0x31,
@@ -71,7 +89,7 @@ static u8 ds3000_dvbs_init_tab[] = {
 	0x52, 0x36,
 	0x53, 0x36,
 	0x56, 0x01,
-	0x63, 0x43,
+	0x63, 0x47,
 	0x64, 0x30,
 	0x65, 0x40,
 	0x68, 0x26,
@@ -117,23 +135,104 @@ static u8 ds3000_dvbs_init_tab[] = {
 	0xc7, 0x0a,
 	0xc8, 0x1a,
 	0xc9, 0x80,
-	0xfe, 0x92,
+	0xfe, 0xb6,
 	0xe0, 0xf8,
 	0xe6, 0x8b,
 	0xd0, 0x40,
 	0xf8, 0x20,
 	0xfa, 0x0f,
-	0xfd, 0x20,
 	0xad, 0x20,
 	0xae, 0x07,
-	0xb8, 0x00,
+	0xb8, 0x00
+};
+static u8 ds310x_dvbs_init_tab[] = {
+	0x23, 0x07,
+	0x08, 0x03,
+	0x0c, 0x02,
+	0x21, 0x54,
+	0x25, 0x82,
+	0x27, 0x31,
+	0x30, 0x08,
+	0x31, 0x40,
+	0x32, 0x32,
+	0x33, 0x35,
+	0x35, 0xff,
+	0x3a, 0x00,
+	0x37, 0x10,
+	0x38, 0x10,
+	0x39, 0x02,
+	0x42, 0x60,
+	0x4a, 0x80,
+	0x4b, 0x04,
+	0x4d, 0x91,
+	0x5d, 0xc8,
+	0x50, 0x36,
+	0x51, 0x36,
+	0x52, 0x36,
+	0x53, 0x36,
+	0x63, 0x0f,
+	0x64, 0x30,
+	0x65, 0x40,
+	0x68, 0x26,
+	0x69, 0x4c,
+	0x70, 0x20,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x40,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x60,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x80,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0xa0,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x1f,
+	0x76, 0x38,
+	0x77, 0xa6,
+	0x78, 0x0c,
+	0x79, 0x80,
+	0x7f, 0x14,
+	0x7c, 0x00,
+	0xae, 0x82,
+	0x80, 0x64,
+	0x81, 0x66,
+	0x82, 0x44,
+	0x85, 0x04,
+	0xcd, 0xf4,
+	0x90, 0x33,
+	0xa0, 0x44,
+	0xc0, 0x08,
+	0xc3, 0x10,
+	0xc4, 0x08,
+	0xc5, 0xf0,
+	0xc6, 0xff,
+	0xc7, 0x00,
+	0xc8, 0x1a,
+	0xc9, 0x80,
+	0xe0, 0xf8,
+	0xe6, 0x8b,
+	0xd0, 0x40,
+	0xf8, 0x20,
+	0xfa, 0x0f,
+	0x00, 0x00,
+	0xbd, 0x01,
+	0xb8, 0x00
 };
 
 /* Register values to initialise the demod in DVB-S2 mode */
 static u8 ds3000_dvbs2_init_tab[] = {
 	0x23, 0x0f,
 	0x08, 0x07,
-	0x0c, 0x00,
+	0x0c, 0x02,
 	0x21, 0x54,
 	0x25, 0x82,
 	0x27, 0x31,
@@ -149,7 +248,7 @@ static u8 ds3000_dvbs2_init_tab[] = {
 	0x42, 0x60,
 	0x4a, 0x80,
 	0x4b, 0x04,
-	0x4d, 0x81,
+	0x4d, 0x91,
 	0x5d, 0x88,
 	0x50, 0x36,
 	0x51, 0x36,
@@ -195,6 +294,7 @@ static u8 ds3000_dvbs2_init_tab[] = {
 	0xca, 0x23,
 	0xcb, 0x24,
 	0xce, 0x74,
+	0x56, 0x01,
 	0x90, 0x03,
 	0x76, 0x80,
 	0x77, 0x42,
@@ -224,17 +324,104 @@ static u8 ds3000_dvbs2_init_tab[] = {
 	0x8a, 0x10,
 	0xba, 0x00,
 	0xf5, 0x04,
-	0xfe, 0x44,
 	0xd2, 0x32,
-	0xb8, 0x00,
+	0xb8, 0x00
+};
+static u8 ds310x_dvbs2_init_tab[] = {
+	0x23, 0x07,
+	0x08, 0x07,
+	0x0c, 0x02,
+	0x21, 0x54,
+	0x25, 0x82,
+	0x27, 0x31,
+	0x30, 0x08,
+	0x32, 0x32,
+	0x33, 0x35,
+	0x35, 0xff,
+	0x3a, 0x00,
+	0x37, 0x10,
+	0x38, 0x10,
+	0x39, 0x02,
+	0x42, 0x60,
+	0x4a, 0x80,
+	0x4b, 0x04,
+	0x4d, 0x91,
+	0x5d, 0xc8,
+	0x50, 0x36,
+	0x51, 0x36,
+	0x52, 0x36,
+	0x53, 0x36,
+	0x63, 0x0f,
+	0x64, 0x10,
+	0x65, 0x20,
+	0x68, 0x46,
+	0x69, 0xcd,
+	0x70, 0x20,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x40,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x60,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x80,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0xa0,
+	0x71, 0x70,
+	0x72, 0x04,
+	0x73, 0x00,
+	0x70, 0x1f,
+	0x76, 0x38,
+	0x77, 0xa6,
+	0x78, 0x0c,
+	0x79, 0x80,
+	0x7f, 0x14,
+	0x85, 0x08,
+	0xcd, 0xf4,
+	0x90, 0x33,
+	0x86, 0x00,
+	0x87, 0x0f,
+	0x89, 0x00,
+	0x8b, 0x44,
+	0x8c, 0x66,
+	0x9d, 0xc1,
+	0x8a, 0x10,
+	0xad, 0x40,
+	0xa0, 0x44,
+	0xc0, 0x08,
+	0xc1, 0x10,
+	0xc2, 0x08,
+	0xc3, 0x10,
+	0xc4, 0x08,
+	0xc5, 0xf0,
+	0xc6, 0xff,
+	0xc7, 0x00,
+	0xc8, 0x1a,
+	0xc9, 0x80,
+	0xca, 0x23,
+	0xcb, 0x24,
+	0xcc, 0xf4,
+	0xce, 0x74,
+	0x00, 0x00,
+	0xbd, 0x01,
+	0xb8, 0x00
 };
 
 struct ds3000_state {
 	struct i2c_adapter *i2c;
 	const struct ds3000_config *config;
 	struct dvb_frontend frontend;
+	u8 skip_fw_load;
 	/* previous uncorrected block counter for DVB-S2 */
 	u16 prevUCBS2;
+	u16 chip_ID;
+	u16 tuner_ID;
 };
 
 static int ds3000_writereg(struct ds3000_state *state, int reg, int data)
@@ -256,30 +443,20 @@ static int ds3000_writereg(struct ds3000_state *state, int reg, int data)
 	return 0;
 }
 
-static int ds3000_i2c_gate_ctrl(struct dvb_frontend *fe, int enable)
-{
-	struct ds3000_state *state = fe->demodulator_priv;
-
-	if (enable)
-		ds3000_writereg(state, 0x03, 0x12);
-	else
-		ds3000_writereg(state, 0x03, 0x02);
-
-	return 0;
-}
 
 /* I2C write for 8k firmware load */
 static int ds3000_writeFW(struct ds3000_state *state, int reg,
 				const u8 *data, u16 len)
 {
-	int i, ret = 0;
+	int i, ret = -EREMOTEIO;
 	struct i2c_msg msg;
 	u8 *buf;
 
 	buf = kmalloc(33, GFP_KERNEL);
 	if (buf == NULL) {
 		printk(KERN_ERR "Unable to kmalloc\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto error;
 	}
 
 	*(buf) = reg;
@@ -299,10 +476,8 @@ static int ds3000_writeFW(struct ds3000_state *state, int reg,
 			printk(KERN_ERR "%s: write error(err == %i, "
 				"reg == 0x%02x\n", __func__, ret, reg);
 			ret = -EREMOTEIO;
-			goto error;
 		}
 	}
-	ret = 0;
 
 error:
 	kfree(buf);
@@ -340,6 +515,57 @@ static int ds3000_readreg(struct ds3000_state *state, u8 reg)
 
 	return b1[0];
 }
+static int ds3000_tuner_writereg(struct ds3000_state *state, int reg, int data)
+{
+	u8 buf[] = { reg, data };
+	struct i2c_msg msg = { .addr = 0x60,
+		.flags = 0, .buf = buf, .len = 2 };
+	int err;
+
+	dprintk("%s: write reg 0x%02x, value 0x%02x\n", __func__, reg, data);
+
+	ds3000_writereg(state, 0x03, (ds3000_readreg(state, 0x03)&0xf8)|0x11);
+	err = i2c_transfer(state->i2c, &msg, 1);
+	if (err != 1) {
+		printk("%s: writereg error(err == %i, reg == 0x%02x,"
+			 " value == 0x%02x)\n", __func__, err, reg, data);
+		return -EREMOTEIO;
+	}
+
+	return 0;
+}
+
+static int ds3000_tuner_readreg(struct ds3000_state *state, u8 reg)
+{
+	int ret;
+	u8 b0[] = { reg };
+	u8 b1[] = { 0 };
+	struct i2c_msg msg[] = {
+		{
+			.addr = 0x60,
+			.flags = 0,
+			.buf = b0,
+			.len = 1
+		}, {
+			.addr = 0x60,
+			.flags = I2C_M_RD,
+			.buf = b1,
+			.len = 1
+		}
+	};
+
+	ds3000_writereg(state, 0x03, (ds3000_readreg(state, 0x03)&0xf8)|0x11);
+	ret = i2c_transfer(state->i2c, msg, 2);
+
+	if (ret != 2) {
+		printk(KERN_ERR "%s: reg=0x%x(error=%d)\n", __func__, reg, ret);
+		return ret;
+	}
+
+	dprintk("%s: read reg 0x%02x, value 0x%02x\n", __func__, reg, b1[0]);
+
+	return b1[0];
+}
 
 static int ds3000_load_firmware(struct dvb_frontend *fe,
 					const struct firmware *fw);
@@ -347,36 +573,74 @@ static int ds3000_load_firmware(struct dvb_frontend *fe,
 static int ds3000_firmware_ondemand(struct dvb_frontend *fe)
 {
 	struct ds3000_state *state = fe->demodulator_priv;
+	const struct firmware ds300x_fw = {ds300x_firmware_size, ds300x_firmware};
+	const struct firmware ds3103_fw = {ds3103_firmware_size, ds3103_firmware};
 	const struct firmware *fw;
 	int ret = 0;
 
 	dprintk("%s()\n", __func__);
 
-	ret = ds3000_readreg(state, 0xb2);
-	if (ret < 0)
+	if (ds3000_readreg(state, 0xb2) <= 0)
 		return ret;
 
+	if (state->skip_fw_load)
+		return 0;
 	/* Load firmware */
+	if ((state->chip_ID==FeDmdId_DS302B)||(state->chip_ID==FeDmdId_DS3103))
+	{
+		ds3000_writereg(state, 0x07, 0xE0);		// global reset, global diseqc reset, golbal fec reset
+		ds3000_writereg(state, 0x07, 0x00);
+
+		/* request the firmware, this will block until someone uploads it */
+		printk(KERN_INFO "%s: Waiting for firmware upload (%s)...\n", __func__,
+					DS3103_DEFAULT_FIRMWARE);
+
+		//ret = request_firmware(&fw, DS3103_DEFAULT_FIRMWARE,
+		//			state->i2c->dev.parent);
+		fw = &ds3103_fw;
+		printk(KERN_INFO "%s: Waiting for firmware upload(2)...\n", __func__);
+		if (ret) {
+			printk(KERN_ERR "%s: No firmware uploaded (timeout or file not "
+					"found?)\n", __func__);
+			return ret;
+		}
+	}
+	else if(state->chip_ID==FeDmdId_DS300X)
+	{
 	/* request the firmware, this will block until someone uploads it */
 	printk(KERN_INFO "%s: Waiting for firmware upload (%s)...\n", __func__,
-				DS3000_DEFAULT_FIRMWARE);
-	ret = request_firmware(&fw, DS3000_DEFAULT_FIRMWARE,
-				state->i2c->dev.parent);
+					DS300X_DEFAULT_FIRMWARE);
+
+		//ret = request_firmware(&fw, DS300X_DEFAULT_FIRMWARE,
+		//			state->i2c->dev.parent);
+		fw = &ds300x_fw;
 	printk(KERN_INFO "%s: Waiting for firmware upload(2)...\n", __func__);
 	if (ret) {
 		printk(KERN_ERR "%s: No firmware uploaded (timeout or file not "
 				"found?)\n", __func__);
 		return ret;
 	}
+	}
+	else
+	{
+		printk(KERN_INFO "%s: unknow chip ID...\n", __func__);
+		return ret;
+	}
+
+	/* Make sure we don't recurse back through here during loading */
+	state->skip_fw_load = 1;
 
 	ret = ds3000_load_firmware(fe, fw);
 	if (ret)
 		printk("%s: Writing firmware to device failed\n", __func__);
 
-	release_firmware(fw);
+	//release_firmware(fw);
 
 	dprintk("%s: Firmware upload %s\n", __func__,
 			ret == 0 ? "complete" : "failed");
+
+	/* Ensure firmware is always loaded if required */
+	state->skip_fw_load = 0;
 
 	return ret;
 }
@@ -385,7 +649,6 @@ static int ds3000_load_firmware(struct dvb_frontend *fe,
 					const struct firmware *fw)
 {
 	struct ds3000_state *state = fe->demodulator_priv;
-	int ret = 0;
 
 	dprintk("%s\n", __func__);
 	dprintk("Firmware is %zu bytes (%02x %02x .. %02x %02x)\n",
@@ -398,10 +661,10 @@ static int ds3000_load_firmware(struct dvb_frontend *fe,
 	/* Begin the firmware load process */
 	ds3000_writereg(state, 0xb2, 0x01);
 	/* write the entire firmware */
-	ret = ds3000_writeFW(state, 0xb0, fw->data, fw->size);
+	ds3000_writeFW(state, 0xb0, fw->data, fw->size);
 	ds3000_writereg(state, 0xb2, 0x00);
 
-	return ret;
+	return 0;
 }
 
 static int ds3000_set_voltage(struct dvb_frontend *fe, fe_sec_voltage_t voltage)
@@ -533,11 +796,63 @@ static int ds3000_read_ber(struct dvb_frontend *fe, u32* ber)
 	return 0;
 }
 
+/* read TS2020 signal strength */
 static int ds3000_read_signal_strength(struct dvb_frontend *fe,
 						u16 *signal_strength)
 {
-	if (fe->ops.tuner_ops.get_rf_strength)
-		fe->ops.tuner_ops.get_rf_strength(fe, signal_strength);
+	struct ds3000_state *state = fe->demodulator_priv;
+	int sig_reading = 0;
+	u8 rfgain, bbgain, nngain;
+	u8 rfagc;
+	u32 gain = 0;
+	dprintk("%s()\n", __func__);
+
+	rfgain = ds3000_tuner_readreg(state, 0x3d) & 0x1f;
+	bbgain = ds3000_tuner_readreg(state, 0x21) & 0x1f;
+	rfagc = ds3000_tuner_readreg(state, 0x3f);
+
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		//TUNER 2020
+	      sig_reading = rfagc * 20 -1166;
+	      if(sig_reading<0) sig_reading =0;
+	      if(rfgain < 0)		rfgain = 0;
+	      if(rfgain > 15)		rfgain = 15;
+	      if(bbgain < 0 )		bbgain = 0;
+	      if(bbgain > 13)		bbgain = 13;
+
+	      if(sig_reading < 400)		sig_reading = 400;
+	      if(sig_reading > 1100)		sig_reading = 1100;
+
+	      gain = (u16) rfgain * 233 + (u16) bbgain * 350 + sig_reading * 24 / 10 + 1000;
+
+	}
+	else if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		//TUNER 2022
+	      sig_reading = rfagc * 16 -670;
+	      if(sig_reading<0) sig_reading =0;
+	      nngain =ds3000_tuner_readreg(state, 0x66);
+	      nngain = (nngain >> 3) & 0x07;
+
+	      if(rfgain < 0)	rfgain = 0;
+	      if(rfgain > 15)	rfgain = 15;
+	      if(bbgain < 2)	bbgain = 2;
+	      if(bbgain > 16)	bbgain = 16;
+	      if(nngain < 0)	nngain = 0;
+	      if(nngain > 6)	nngain = 6;
+
+	      if(sig_reading < 600)	sig_reading = 600;
+	      if(sig_reading > 1600)	sig_reading = 1600;
+
+	      gain = (u16) rfgain * 265 + (u16) bbgain * 338 + (u16) nngain * 285 + sig_reading * 176 / 100 - 3000;
+	}
+
+
+	*signal_strength = gain*100;
+
+	dprintk("%s: raw / cooked = 0x%04x / 0x%04x\n", __func__,
+			sig_reading, *signal_strength);
 
 	return 0;
 }
@@ -718,6 +1033,7 @@ static int ds3000_send_diseqc_msg(struct dvb_frontend *fe,
 	/* enable DiSEqC message send pin */
 	data = ds3000_readreg(state, 0xa2);
 	data &= ~0xc0;
+	data &= ~0x20;
 	ds3000_writereg(state, 0xa2, data);
 
 	/* DiSEqC message */
@@ -776,6 +1092,7 @@ static int ds3000_diseqc_send_burst(struct dvb_frontend *fe,
 
 	data = ds3000_readreg(state, 0xa2);
 	data &= ~0xc0;
+	data &= ~0x20;
 	ds3000_writereg(state, 0xa2, data);
 
 	/* DiSEqC burst */
@@ -836,6 +1153,8 @@ struct dvb_frontend *ds3000_attach(const struct ds3000_config *config,
 {
 	struct ds3000_state *state = NULL;
 	int ret;
+	u8 val_01, val_02, val_b2;
+
 
 	dprintk("%s\n", __func__);
 
@@ -861,6 +1180,31 @@ struct dvb_frontend *ds3000_attach(const struct ds3000_config *config,
 			ds3000_readreg(state, 0x02),
 			ds3000_readreg(state, 0x01));
 
+	/* check demod chip ID */
+	val_01 = ds3000_readreg(state, 0x01);
+	val_02 = ds3000_readreg(state, 0x02);
+	val_b2 = ds3000_readreg(state, 0xb2);
+	if((val_02 == 0x00) && (val_01 == 0xC0))
+	{
+		state->chip_ID = FeDmdId_DS300X;
+		printk("\tChip ID = [DS300X]!\n");
+	}
+	else if((val_02 == 0x00) && (val_01 == 0xD0) && ((val_b2 & 0xC0) == 0x00))
+	{
+		state->chip_ID = FeDmdId_DS302B;
+		printk("\tChip ID = [DS3002B]!\n");
+	}
+	else if((val_02 == 0x00) && (val_01 == 0xD0) && ((val_b2 & 0xC0) == 0xC0))
+	{
+		state->chip_ID = FeDmdId_DS3103;
+		printk("\tChip ID = [DS3103]!\n");
+	}
+	else
+	{
+		state->chip_ID = FeDmdId_UNKNOW;
+		printk("\tChip ID = unknow!\n");
+	}
+
 	memcpy(&state->frontend.ops, &ds3000_ops,
 			sizeof(struct dvb_frontend_ops));
 	state->frontend.demodulator_priv = state;
@@ -880,6 +1224,20 @@ error2:
 }
 EXPORT_SYMBOL(ds3000_attach);
 
+static int ds3000_set_property(struct dvb_frontend *fe,
+	struct dtv_property *tvp)
+{
+	dprintk("%s(..)\n", __func__);
+	return 0;
+}
+
+static int ds3000_get_property(struct dvb_frontend *fe,
+	struct dtv_property *tvp)
+{
+	dprintk("%s(..)\n", __func__);
+	return 0;
+}
+
 static int ds3000_set_carrier_offset(struct dvb_frontend *fe,
 					s32 carrier_offset_khz)
 {
@@ -898,7 +1256,76 @@ static int ds3000_set_carrier_offset(struct dvb_frontend *fe,
 
 	return 0;
 }
+static int ds3000_setTSdiv(struct ds3000_state *state, int type, u8 tmp1, u8 tmp2)
+{
+  u8 buf;
+	if(type == SYS_DVBS)
+	{
+		if(state->chip_ID == FeDmdId_DS300X)
+		{
+			tmp1 &= 0x07;
+			tmp2 &= 0x07;
+			buf = ds3000_readreg(state, 0xfe);
+			buf &= 0xc0;
+			buf |= ((u8)(((tmp1<<3) + tmp2)) & 0x3f);
+			ds3000_writereg(state, 0xfe, buf);
+		}
+		else if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+		{
+			tmp1 -= 1;
+			tmp2 -= 1;
 
+			tmp1 &= 0x3f;
+			tmp2 &= 0x3f;
+
+			buf = ds3000_readreg(state, 0xfe);
+			buf &= 0xF0;
+			buf |= (tmp1 >> 2) & 0x0f;
+			ds3000_writereg(state, 0xfe, buf);
+
+			buf = (u8)((tmp1 & 0x03) << 6);
+			buf |= tmp2;
+			ds3000_writereg(state, 0xea, buf);
+		}
+		else
+		{
+			return -1;
+		}
+	}
+	else if(type == SYS_DVBS2)
+	{
+		if(state->chip_ID == FeDmdId_DS300X)
+		{
+			tmp1 &= 0x0f;
+			tmp2 &= 0x0f;
+			buf = (u8)((tmp1<<4) + tmp2);
+			ds3000_writereg(state, 0xfe, buf);
+		}
+		else if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+		{
+			tmp1 -= 1;
+			tmp2 -= 1;
+
+			tmp1 &= 0x3f;
+			tmp2 &= 0x3f;
+
+
+			buf = ds3000_readreg(state, 0xfe);
+			buf &= 0xF0;						// bits[3:0]
+			buf |= (tmp1 >> 2) & 0x0f;
+			ds3000_writereg(state, 0xfe, buf);
+
+			buf = (u8)((tmp1 & 0x03) << 6);		// ci_divrange_h_0 bits[1:0]
+			buf |= tmp2;						// ci_divrange_l   bits[5:0]
+			ds3000_writereg(state, 0xea, buf);
+		}
+		else
+		{
+			return -1;
+		}
+	}
+	return 0;
+}
 static int ds3000_set_frontend(struct dvb_frontend *fe)
 {
 	struct ds3000_state *state = fe->demodulator_priv;
@@ -906,133 +1333,568 @@ static int ds3000_set_frontend(struct dvb_frontend *fe)
 
 	int i;
 	fe_status_t status;
+	u8 mlpf, mlpf_new, mlpf_max, mlpf_min, nlpf, div4;
 	s32 offset_khz;
-	u32 frequency;
-	u16 value;
+	u16 value, ndiv=0;
+	u32 f3db;
+	u8 RFgain=0;
+	u32 			tmp;
+	u8			tmp1, tmp2;
+	u32			target_mclk = 0;
+	u32			ts_clk = 24000;
+	u16			divide_ratio;
 
-	dprintk("%s() ", __func__);
+	dprintk("%s() frec=%d symb=%d", __func__, c->frequency, c->symbol_rate);
 
 	if (state->config->set_ts_params)
 		state->config->set_ts_params(fe, 0);
-	/* Tune */
-	if (fe->ops.tuner_ops.set_params)
-		fe->ops.tuner_ops.set_params(fe);
+	//
+	if(state->chip_ID == FeDmdId_DS300X)
+	{
+		value = ds3000_readreg(state, 0xb2);
+		if(value == 0x01)
+		{
+			ds3000_writereg(state, 0x05, 0x00);
+			ds3000_writereg(state, 0xb2, 0x00);
+		}
+	}
+	else if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+	{
+		value = ds3000_readreg(state, 0xb2);
+		if(value == 0x01)
+		{
+			ds3000_writereg(state, 0x00, 0x00);
+			ds3000_writereg(state, 0xb2, 0x00);
+		}
+	}
+	else
+	{
+		printk(KERN_ERR "%s: Unable check tuner version\n", __func__);
+		return 1;			//Error, maybe other tuner ICs,please do action at top level application
+	}
 
-	/* ds3000 global reset */
-	ds3000_writereg(state, 0x07, 0x80);
-	ds3000_writereg(state, 0x07, 0x00);
-	/* ds3000 build-in uC reset */
+
+	/* Tune */
+	//Set the Pll
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		ds3000_tuner_writereg(state, 0x10, 0x00);
+	}
+	else if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		ds3000_tuner_writereg(state, 0x10, 0x0b);
+		ds3000_tuner_writereg(state, 0x11, 0x40);
+	}
+	else
+	{
+		printk(KERN_ERR "%s: Unable check tuner version\n", __func__);
+		return 1;			//Error, maybe other tuner ICs,please do action at top level application
+	}
+	div4 = 0;
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		//TUNER 2020
+		/* calculate and set freq divider */
+		if (c->frequency < 1146000) {
+			ds3000_tuner_writereg(state, 0x10, 0x11);
+			div4 = 1;
+			ndiv = (c->frequency * (6 + 8) * 4) / DS3000_XTAL_FREQ;
+		} else {
+			ds3000_tuner_writereg(state, 0x10, 0x01);
+			ndiv = (c->frequency * (6 + 8) * 2)/DS3000_XTAL_FREQ;
+		}
+		ndiv = ndiv + ndiv %2 ;
+		value = ndiv -1024;
+		ds3000_tuner_writereg(state, 0x01, (value & 0x0f00) >> 8);
+		ds3000_tuner_writereg(state, 0x02, value & 0x00ff);
+	}
+	else if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		//TUNER 2022
+		/* calculate and set freq divider */
+		if (c->frequency < 1103000) {
+			ds3000_tuner_writereg(state, 0x10, 0x1b);
+			div4 = 1;
+			ndiv = (c->frequency * (6 + 8) * 4)/DS3000_XTAL_FREQ ;
+		} else {
+			ndiv = (c->frequency * (6 + 8) * 2)/DS3000_XTAL_FREQ ;
+		}
+		ndiv = ndiv + ndiv %2 ;
+		if(ndiv < 4095)
+		{
+			value = ndiv - 1024;
+		}
+		else if (ndiv < 6143 )
+		{
+			value = ndiv + 1024;
+		}
+		else
+		{
+			value = ndiv + 3072;
+		}
+		ds3000_tuner_writereg(state, 0x01, (value & 0x3f00) >> 8);
+		ds3000_tuner_writereg(state, 0x02, value & 0x00ff);
+	}
+	/* set pll */
+	ds3000_tuner_writereg(state, 0x03, 0x06);
+	ds3000_tuner_writereg(state, 0x51, 0x0f);
+	ds3000_tuner_writereg(state, 0x51, 0x1f);
+	ds3000_tuner_writereg(state, 0x50, 0x10);
+	ds3000_tuner_writereg(state, 0x50, 0x00);
+	msleep(5);
+
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		//TUNER 2020
+		value =  ds3000_tuner_readreg(state, 0x66);
+		if(((value&0x80)>>7)!= div4)
+		{
+			ds3000_tuner_writereg(state, 0x10, 0x11);
+			div4 = 1;
+			ndiv = (c->frequency * (6 + 8) * 4)/DS3000_XTAL_FREQ;
+			ndiv = ndiv + ndiv%2;
+			value = ndiv - 1024;
+
+			ds3000_tuner_writereg(state, 0x01, (value & 0x0f00) >> 8);
+			ds3000_tuner_writereg(state, 0x02, value & 0x00ff);
+
+			ds3000_tuner_writereg(state, 0x51, 0x0f);
+			ds3000_tuner_writereg(state, 0x51, 0x1f);
+			ds3000_tuner_writereg(state, 0x50, 0x10);
+			ds3000_tuner_writereg(state, 0x50, 0x00);
+		}
+	}
+	else if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		//TUNER 2022
+		value =  ds3000_tuner_readreg(state, 0x14);
+		value &=0x7f;
+		if(value < 64 )
+		{
+			value =  ds3000_tuner_readreg(state, 0x10);
+			value |= 0x80;
+			ds3000_tuner_writereg(state, 0x10, value);
+			ds3000_tuner_writereg(state, 0x11, 0x6f);
+
+			ds3000_tuner_writereg(state, 0x51, 0x0f);
+			ds3000_tuner_writereg(state, 0x51, 0x1f);
+			ds3000_tuner_writereg(state, 0x50, 0x10);
+			ds3000_tuner_writereg(state, 0x50, 0x00);
+		}
+		msleep(5);
+		value =  ds3000_tuner_readreg(state, 0x14);
+		value &=0x1f;
+		if(value > 19)
+		{
+			value =  ds3000_tuner_readreg(state, 0x10);
+			value &= 0xfd;
+			ds3000_tuner_writereg(state, 0x10, value);
+		}
+	}
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		ds3000_tuner_writereg(state, 0x60, 0x79);
+	}
+	/* unknown */
+	ds3000_tuner_writereg(state, 0x51, 0x17);
+	ds3000_tuner_writereg(state, 0x51, 0x1f);
+	ds3000_tuner_writereg(state, 0x50, 0x08);
+	ds3000_tuner_writereg(state, 0x50, 0x00);
+	msleep(5);
+
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		//TUNER 2020
+	      value = ds3000_tuner_readreg(state, 0x3d);
+	      RFgain = value & 0x0f;
+	      if (RFgain < 15)
+	      {
+		      if(RFgain < 4 ) RFgain = 0;
+			else         RFgain -= 3;
+		      value = ((RFgain << 3) | 0x01) & 0x79;
+		      ds3000_tuner_writereg(state, 0x60, value);
+
+		      ds3000_tuner_writereg(state, 0x51, 0x17);
+		      ds3000_tuner_writereg(state, 0x51, 0x1f);
+		      ds3000_tuner_writereg(state, 0x50, 0x08);
+		      ds3000_tuner_writereg(state, 0x50, 0x00);
+	      }
+
+	}
+
+	if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		//TUNER 2022
+		ds3000_tuner_writereg(state, 0x25, 0x00);
+		ds3000_tuner_writereg(state, 0x27, 0x70);
+		ds3000_tuner_writereg(state, 0x41, 0x09);
+
+		ds3000_tuner_writereg(state, 0x08, 0x0b);
+	}
+
+	/* set low-pass filter period */
+	ds3000_tuner_writereg(state, 0x04, 0x2e);//ds3000_writereg(state,
+
+	ds3000_tuner_writereg(state, 0x51, 0x1b);
+	ds3000_tuner_writereg(state, 0x51, 0x1f);
+	ds3000_tuner_writereg(state, 0x50, 0x04);
+	ds3000_tuner_writereg(state, 0x50, 0x00);
+	msleep(5);
+
+	f3db = ((c->symbol_rate / 1000) * 135) / 200 + 2000;
+	if ((c->symbol_rate / 1000) < 5000)
+		f3db += 3000;
+	if (f3db < 7000)
+		f3db = 7000;
+	if (f3db > 40000)
+		f3db = 40000;
+
+	/* set low-pass filter baseband */
+	value = ds3000_tuner_readreg(state, 0x26);
+	value &= 0x3f ;
+
+	if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		//TUNER 2022
+		ds3000_tuner_writereg(state, 0x41, 0x0d);
+
+		ds3000_tuner_writereg(state, 0x51, 0x1b);
+		ds3000_tuner_writereg(state, 0x51, 0x1f);
+		ds3000_tuner_writereg(state, 0x50, 0x04);
+		ds3000_tuner_writereg(state, 0x50, 0x00);
+		msleep(5);
+		value = (value + (ds3000_tuner_readreg(state, 0x26)&0x3f))/2;
+	}
+	mlpf = 0x2e * 207 / ((value << 1) + 151);
+	mlpf_max = mlpf * 135 / 100;
+	mlpf_min = mlpf * 78 / 100;
+	if (mlpf_max > 63)
+		mlpf_max = 63;
+
+
+	/* rounded to the closest integer */
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		value = 2766;
+	}
+	if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		value = 3200;
+	}
+	nlpf = ((mlpf * f3db * 1000) + (value * DS3000_XTAL_FREQ / 2))
+			/ (value * DS3000_XTAL_FREQ);
+
+	if (nlpf > 23)
+		nlpf = 23;
+	if (nlpf < 1)
+		nlpf = 1;
+
+	/* rounded to the closest integer */
+	mlpf_new = ((DS3000_XTAL_FREQ * nlpf * value) +
+			(1000 * f3db / 2)) / (1000 * f3db);
+
+	if (mlpf_new < mlpf_min) {
+		nlpf++;
+		mlpf_new = ((DS3000_XTAL_FREQ * nlpf * value) +
+				(1000 * f3db / 2)) / (1000 * f3db);
+	}
+
+	if (mlpf_new > mlpf_max)
+		mlpf_new = mlpf_max;
+
+	ds3000_tuner_writereg(state, 0x04, mlpf_new);
+	ds3000_tuner_writereg(state, 0x06, nlpf);
+	ds3000_tuner_writereg(state, 0x51, 0x1b);
+	ds3000_tuner_writereg(state, 0x51, 0x1f);
+	ds3000_tuner_writereg(state, 0x50, 0x04);
+	ds3000_tuner_writereg(state, 0x50, 0x00);
+	msleep(5);
+
+	if(state->tuner_ID == TUNER_M88TS2022)
+	{
+		//TUNER 2022
+		value = ds3000_tuner_readreg(state, 0x26);
+		value &= 0x3f;
+		ds3000_tuner_writereg(state, 0x41, 0x09);
+
+		ds3000_tuner_writereg(state, 0x51, 0x1b);
+		ds3000_tuner_writereg(state, 0x51, 0x1f);
+		ds3000_tuner_writereg(state, 0x50, 0x04);
+		ds3000_tuner_writereg(state, 0x50, 0x00);
+		msleep(5);
+		value = (value + (ds3000_tuner_readreg(state, 0x26)&0x3f))/2;
+
+		value |= 0x80;
+		ds3000_tuner_writereg(state, 0x25, value);
+		ds3000_tuner_writereg(state, 0x27, 0x30);
+		ds3000_tuner_writereg(state, 0x08, 0x09);
+	}
+	/* unknown */
+	ds3000_tuner_writereg(state, 0x51, 0x1e);
+	ds3000_tuner_writereg(state, 0x51, 0x1f);
+	ds3000_tuner_writereg(state, 0x50, 0x01);
+	ds3000_tuner_writereg(state, 0x50, 0x00);
+
+	if(state->tuner_ID == TUNER_M88TS2020)
+	{
+		//TUNER 2022
+		if(RFgain == 15)
+		{
+			msleep(5);
+			value = ds3000_tuner_readreg(state, 0x21);
+			value &= 0x0f;
+			if(value < 3)
+			{
+				ds3000_tuner_writereg(state, 0x60, 0x61);
+
+				ds3000_tuner_writereg(state, 0x51, 0x17);
+				ds3000_tuner_writereg(state, 0x51, 0x1f);
+				ds3000_tuner_writereg(state, 0x50, 0x08);
+				ds3000_tuner_writereg(state, 0x50, 0x00);
+			}
+		}
+	}
+	msleep(60);
+
+	//demod
+
 	ds3000_writereg(state, 0xb2, 0x01);
-	/* ds3000 software reset */
+	if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+	{
 	ds3000_writereg(state, 0x00, 0x01);
+	}
+	//set demod registers
+
+	offset_khz = (u32)(ndiv * DS3000_XTAL_FREQ / (6 + 8) / (div4 + 1) / 2 - c->frequency);
+
+	value = ds3000_readreg(state, 0x08);
 
 	switch (c->delivery_system) {
 	case SYS_DVBS:
 		/* initialise the demod in DVB-S mode */
+		value &= ~0x04;
+		ds3000_writereg(state, 0x08, value);
+		if(state->chip_ID == FeDmdId_DS300X)
+		{
 		for (i = 0; i < sizeof(ds3000_dvbs_init_tab); i += 2)
 			ds3000_writereg(state,
 				ds3000_dvbs_init_tab[i],
 				ds3000_dvbs_init_tab[i + 1]);
-		value = ds3000_readreg(state, 0xfe);
-		value &= 0xc0;
-		value |= 0x1b;
-		ds3000_writereg(state, 0xfe, value);
+		}
+		else if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+		{
+			for (i = 0; i < sizeof(ds310x_dvbs_init_tab); i += 2)
+				ds3000_writereg(state,
+					ds310x_dvbs_init_tab[i],
+					ds310x_dvbs_init_tab[i + 1]);
+		}
+
+		ts_clk = 8000;
+		target_mclk = 96000;
+
+		if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+		{
+			value = ds3000_readreg(state, 0x4d);
+			value &= ~0x02;
+			ds3000_writereg(state, 0x4d, value);
+			value = ds3000_readreg(state, 0x30);
+			value &= ~0x10;
+			ds3000_writereg(state, 0x30, value);
+		}
+
 		break;
 	case SYS_DVBS2:
 		/* initialise the demod in DVB-S2 mode */
+		value |= 0x04;
+		ds3000_writereg(state, 0x08, value);
+		if(state->chip_ID == FeDmdId_DS300X)
+		{
 		for (i = 0; i < sizeof(ds3000_dvbs2_init_tab); i += 2)
 			ds3000_writereg(state,
 				ds3000_dvbs2_init_tab[i],
 				ds3000_dvbs2_init_tab[i + 1]);
-		if (c->symbol_rate >= 30000000)
-			ds3000_writereg(state, 0xfe, 0x54);
+		}
+		else if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+		{
+			for (i = 0; i < sizeof(ds310x_dvbs2_init_tab); i += 2)
+				ds3000_writereg(state,
+					ds310x_dvbs2_init_tab[i],
+					ds310x_dvbs2_init_tab[i + 1]);
+		}
+		ts_clk = 8471;
+		if(state->chip_ID == FeDmdId_DS300X)
+		{
+			target_mclk = 144000;
+		}
+		else if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+		{
+			value = ds3000_readreg(state, 0x4d);
+			value &= ~0x02;
+			ds3000_writereg(state, 0x4d, value);
+			value = ds3000_readreg(state, 0x30);
+			value &= ~0x10;
+			ds3000_writereg(state, 0x30, value);
+			if(c->symbol_rate > 28000000)
+			{
+				target_mclk = 192000;
+			}
+			else if(c->symbol_rate > 18000000)
+			{
+				target_mclk = 144000;
+			}
 		else
-			ds3000_writereg(state, 0xfe, 0x98);
+			{
+				target_mclk = 96000;
+			}
+		}
+
+		if(c->symbol_rate <= 5000000)
+		{
+			ds3000_writereg(state, 0xc0, 0x04);
+			ds3000_writereg(state, 0x8a, 0x09);
+			ds3000_writereg(state, 0x8b, 0x22);
+			ds3000_writereg(state, 0x8c, 0x88);
+		}
+
 		break;
 	default:
 		return 1;
 	}
+	divide_ratio = (target_mclk + ts_clk - 1) / ts_clk;
+
+	if(divide_ratio > 128)
+		divide_ratio = 128;
+
+	if(divide_ratio < 2)
+		divide_ratio = 2;
+
+	tmp1 = (u8)(divide_ratio / 2);
+	tmp2 = (u8)(divide_ratio / 2);
+
+	if((divide_ratio % 2) != 0)
+		tmp2 += 1;
+
+	//if((tmp1 + tmp2) != 0)
+	//{
+	//	ts_clk = target_mclk / (tmp1 + tmp2);
+	//}
+
+	ds3000_setTSdiv(state, c->delivery_system, tmp1, tmp2);
+
+	if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+	{
+		// 0x22 bit[7:6] clkxM_d
+		tmp1 = ds3000_readreg(state, 0x22);
+		// 0x24 bit[7:6] clkxM_sel
+		tmp2 = ds3000_readreg(state, 0x24);
+
+		switch(target_mclk)
+		{
+			case 192000:		// 4b'0011 MCLK = 192M
+				tmp1 |= 0xc0;		// 0x22 bit[7:6] = 2b'11
+				tmp2 &= 0x3f;		// 0x24 bit[7:6] = 2b'00
+		break;
+
+			case 144000:		// 4b'0100 MCLK = 144M
+				tmp1 &= 0x3f;		// 0x22 bit[7:6] = 2b'00
+				tmp2 &= 0x7f;		// 0x24 bit[7:6] = 2b'01
+				tmp2 |= 0x40;
+				break;
+
+			case 115200:		// 4b'0101 MCLK = 115.2M
+				tmp1 &= 0x7f;		// 0x22 bit[7:6] = 2b'01
+				tmp1 |= 0x40;
+				tmp2 &= 0x7f;		// 0x24 bit[7:6] = 2b'01
+				tmp2 |= 0x40;
+				break;
+
+			case 72000:			// 4b'1100 MCLK = 72M
+				tmp2 |= 0xc0;		// 0x24 bit[7:6] = 2b'11
+				tmp1 &= 0x3f;		// 0x22 bit[7:6] = 2b'00
+				break;
+
+			case 96000:			// 4b'0110 MCLK = 96M
+			default:
+				tmp1 &= 0xbf;		// 0x22 bit[7:6] = 2b'10
+				tmp1 |= 0x80;
+
+				tmp2 &= 0x7f;		// 0x24 bit[7:6] = 2b'01
+				tmp2 |= 0x40;
+			break;
+		}
+
+		ds3000_writereg(state, 0x22, tmp1);
+		ds3000_writereg(state, 0x24, tmp2);
+	}
+	ds3000_writereg(state, 0x33, 0x99);
+
 
 	/* enable 27MHz clock output */
-	ds3000_writereg(state, 0x29, 0x80);
+	value = ds3000_readreg(state, 0x29);
+	value |= 0x80;
+	value &= ~0x10;
+	ds3000_writereg(state, 0x29, value);
+
 	/* enable ac coupling */
-	ds3000_writereg(state, 0x25, 0x8a);
+	value = ds3000_readreg(state, 0x25);
+	value |= 0x08;
+	ds3000_writereg(state, 0x25, value);
+
 
 	/* enhance symbol rate performance */
-	if ((c->symbol_rate / 1000) <= 5000) {
-		value = 29777 / (c->symbol_rate / 1000) + 1;
-		if (value % 2 != 0)
-			value++;
-		ds3000_writereg(state, 0xc3, 0x0d);
-		ds3000_writereg(state, 0xc8, value);
-		ds3000_writereg(state, 0xc4, 0x10);
-		ds3000_writereg(state, 0xc7, 0x0e);
-	} else if ((c->symbol_rate / 1000) <= 10000) {
-		value = 92166 / (c->symbol_rate / 1000) + 1;
-		if (value % 2 != 0)
-			value++;
-		ds3000_writereg(state, 0xc3, 0x07);
-		ds3000_writereg(state, 0xc8, value);
-		ds3000_writereg(state, 0xc4, 0x09);
-		ds3000_writereg(state, 0xc7, 0x12);
-	} else if ((c->symbol_rate / 1000) <= 20000) {
-		value = 64516 / (c->symbol_rate / 1000) + 1;
-		ds3000_writereg(state, 0xc3, value);
-		ds3000_writereg(state, 0xc8, 0x0e);
-		ds3000_writereg(state, 0xc4, 0x07);
-		ds3000_writereg(state, 0xc7, 0x18);
-	} else {
-		value = 129032 / (c->symbol_rate / 1000) + 1;
-		ds3000_writereg(state, 0xc3, value);
-		ds3000_writereg(state, 0xc8, 0x0a);
-		ds3000_writereg(state, 0xc4, 0x05);
-		ds3000_writereg(state, 0xc7, 0x24);
+	if((c->symbol_rate / 1000) <= 3000)
+	{
+		ds3000_writereg(state, 0xc3, 0x08); // 8 * 32 * 100 / 64 = 400
+		ds3000_writereg(state, 0xc8, 0x20);
+		ds3000_writereg(state, 0xc4, 0x08); // 8 * 0 * 100 / 128 = 0
+		ds3000_writereg(state, 0xc7, 0x00);
+	}
+	else if((c->symbol_rate / 1000) <= 10000)
+	{
+		ds3000_writereg(state, 0xc3, 0x08); // 8 * 16 * 100 / 64 = 200
+		ds3000_writereg(state, 0xc8, 0x10);
+		ds3000_writereg(state, 0xc4, 0x08); // 8 * 0 * 100 / 128 = 0
+		ds3000_writereg(state, 0xc7, 0x00);
+	}
+	else
+	{
+		ds3000_writereg(state, 0xc3, 0x08); // 8 * 6 * 100 / 64 = 75
+		ds3000_writereg(state, 0xc8, 0x06);
+		ds3000_writereg(state, 0xc4, 0x08); // 8 * 0 * 100 / 128 = 0
+		ds3000_writereg(state, 0xc7, 0x00);
 	}
 
 	/* normalized symbol rate rounded to the closest integer */
-	value = (((c->symbol_rate / 1000) << 16) +
-			(DS3000_SAMPLE_RATE / 2)) / DS3000_SAMPLE_RATE;
-	ds3000_writereg(state, 0x61, value & 0x00ff);
-	ds3000_writereg(state, 0x62, (value & 0xff00) >> 8);
+	tmp = (u32)((((c->symbol_rate / 1000) << 15) + (DS3000_SAMPLE_RATE / 4)) / (DS3000_SAMPLE_RATE / 2));
+
+	ds3000_writereg(state, 0x61, tmp & 0x00ff);
+	ds3000_writereg(state, 0x62, (tmp & 0xff00) >> 8);
 
 	/* co-channel interference cancellation disabled */
-	ds3000_writereg(state, 0x56, 0x00);
-
+	value = ds3000_readreg(state, 0x56);
+		value &= ~0x01;
+	ds3000_writereg(state, 0x56, value);
 	/* equalizer disabled */
-	ds3000_writereg(state, 0x76, 0x00);
+	value = ds3000_readreg(state, 0x76);
+	value &= ~0x80;
+	ds3000_writereg(state, 0x76, value);
+	//offset
+	if ((c->symbol_rate / 1000) < 5000)
+		offset_khz += 3000;
+	ds3000_set_carrier_offset(fe, offset_khz);
 
-	/*ds3000_writereg(state, 0x08, 0x03);
-	ds3000_writereg(state, 0xfd, 0x22);
-	ds3000_writereg(state, 0x08, 0x07);
-	ds3000_writereg(state, 0xfd, 0x42);
-	ds3000_writereg(state, 0x08, 0x07);*/
-
-	if (state->config->ci_mode) {
-		switch (c->delivery_system) {
-		case SYS_DVBS:
-		default:
-			ds3000_writereg(state, 0xfd, 0x80);
-		break;
-		case SYS_DVBS2:
-			ds3000_writereg(state, 0xfd, 0x01);
-			break;
-		}
-	}
-
+	if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+	{
 	/* ds3000 out of software reset */
 	ds3000_writereg(state, 0x00, 0x00);
+	}
 	/* start ds3000 build-in uC */
 	ds3000_writereg(state, 0xb2, 0x00);
 
-	if (fe->ops.tuner_ops.get_frequency) {
-		fe->ops.tuner_ops.get_frequency(fe, &frequency);
-		offset_khz = frequency - c->frequency;
-		ds3000_set_carrier_offset(fe, offset_khz);
-	}
 
 	for (i = 0; i < 30 ; i++) {
 		ds3000_read_status(fe, &status);
-		if (status & FE_HAS_LOCK)
+		if (status && FE_HAS_LOCK)
 			break;
 
 		msleep(10);
@@ -1060,11 +1922,6 @@ static int ds3000_tune(struct dvb_frontend *fe,
 
 static enum dvbfe_algo ds3000_get_algo(struct dvb_frontend *fe)
 {
-	struct ds3000_state *state = fe->demodulator_priv;
-
-	if (state->config->set_lock_led)
-		state->config->set_lock_led(fe, 0);
-
 	dprintk("%s()\n", __func__);
 	return DVBFE_ALGO_HW;
 }
@@ -1078,11 +1935,95 @@ static int ds3000_initfe(struct dvb_frontend *fe)
 {
 	struct ds3000_state *state = fe->demodulator_priv;
 	int ret;
+	u8 buf;
+	u8 val_08;
 
 	dprintk("%s()\n", __func__);
 	/* hard reset */
+	if(state->chip_ID==FeDmdId_DS300X)
+	{
+	      buf = ds3000_readreg(state, 0xb2);
+		if(buf == 0x01)
+		{
+			ds3000_writereg(state, 0x05, 0x00);
+			ds3000_writereg(state, 0xb2, 0x00);
+		}
+	}
+	else if ((state->chip_ID==FeDmdId_DS302B)||(state->chip_ID==FeDmdId_DS3103))
+	{
+		buf = ds3000_readreg(state, 0xb2);
+		if(buf == 0x01)
+		{
+			ds3000_writereg(state, 0x00, 0x00);
+			ds3000_writereg(state, 0xb2, 0x00);
+		}
+	}
+	else
+	{
+		printk(KERN_ERR "%s: unknow demod version\n", __func__);
+		return -1;			//Error, maybe other tuner ICs,please do action at top level application
+	}
+	ds3000_writereg(state, 0x07, 0x80);
+	ds3000_writereg(state, 0x07, 0x00);
 	ds3000_writereg(state, 0x08, 0x01 | ds3000_readreg(state, 0x08));
 	msleep(1);
+
+	//check tuner version
+	// Wake Up the tuner
+	buf = ds3000_tuner_readreg(state, 0x00);
+	buf &= 0x03;
+
+	if(buf == 0x00)
+	{
+		ds3000_tuner_writereg(state, 0x00, 0x01);
+		msleep(2);
+	}
+	ds3000_tuner_writereg(state, 0x00, 0x03);
+	msleep(2);
+
+	//Check the tuner version
+
+	buf = ds3000_tuner_readreg(state, 0x00);
+
+	if((buf == 0x01) || (buf == 0x41) || (buf == 0x81))
+	{
+		dprintk("FIND TUNER M88TS2020");		//A0 or A4 or A5
+		/* TS2020 init */
+		state->tuner_ID = TUNER_M88TS2020;
+		ds3000_tuner_writereg(state, 0x62, 0xfd);
+		ds3000_tuner_writereg(state, 0x42, 0x63);
+		ds3000_tuner_writereg(state, 0x07, 0x02);
+		ds3000_tuner_writereg(state, 0x08, 0x01);
+	}
+	else if((buf == 0xc3)|| (buf == 0x83)|| (buf == 0xc1)) //yh add c1
+	{
+		dprintk("FIND TUNER_M88TS2022");		//C0 or C0A
+		/* TS2022 init */
+		state->tuner_ID = TUNER_M88TS2022;
+
+		ds3000_tuner_writereg(state, 0x62, 0xec);
+		ds3000_tuner_writereg(state, 0x42, 0x6c);
+
+		ds3000_tuner_writereg(state, 0x7d, 0x9d);
+		ds3000_tuner_writereg(state, 0x7c, 0x9a);
+		ds3000_tuner_writereg(state, 0x7a, 0x76);
+
+		ds3000_tuner_writereg(state, 0x3b, 0x01);
+		ds3000_tuner_writereg(state, 0x63, 0x88);
+
+		ds3000_tuner_writereg(state, 0x61, 0x85);
+		ds3000_tuner_writereg(state, 0x22, 0x30);
+		ds3000_tuner_writereg(state, 0x30, 0x40);
+		ds3000_tuner_writereg(state, 0x20, 0x23);
+		ds3000_tuner_writereg(state, 0x24, 0x02);
+		ds3000_tuner_writereg(state, 0x12, 0xa0);
+	}
+	else
+	{
+		state->tuner_ID=TUNER_UNKNOW;
+		printk(KERN_ERR "%s: Unable check tuner version\n", __func__);
+		return -1;			//Error, maybe other tuner ICs,please do action at top level application
+	}
 
 	/* Load the firmware if required */
 	ret = ds3000_firmware_ondemand(fe);
@@ -1090,14 +2031,77 @@ static int ds3000_initfe(struct dvb_frontend *fe)
 		printk(KERN_ERR "%s: Unable initialize firmware\n", __func__);
 		return ret;
 	}
+	//TS mode
+	val_08 = ds3000_readreg(state, 0x08);
+	buf = ds3000_readreg(state, 0x27);
+	buf &= ~0x01;
+	ds3000_writereg(state, 0x27, buf);
+	//dvbs
+	buf = val_08 & (~0x04) ;
+	ds3000_writereg(state, 0x08, buf);
+	ds3000_setTSdiv(state, SYS_DVBS, 6, 6);
+	buf = ds3000_readreg(state, 0xfd);
+	buf |= 0x80;
+	buf &= ~0x40;
+	if(state->config->ci_mode) 	buf |= 0x20;
+        else
+        buf &= ~0x20;
+	buf &= ~0x1f;
+	ds3000_writereg(state, 0xfd, buf);
 
+	//S2
+	buf = val_08 | 0x04 ;
+	ds3000_writereg(state, 0x08, buf);
+	ds3000_setTSdiv(state, SYS_DVBS2, 8, 9);
+	buf = ds3000_readreg(state, 0xfd);
+	buf |= 0x01;
+	buf &= ~0x04;
+	if(state->config->ci_mode) 
+{	buf &= ~0xba;
+	buf |= 0x40;
+}
+else
+{
+	buf &= ~0xb8;
+	buf &= ~0x42;
+}
+	ds3000_writereg(state, 0xfd, buf);
+
+	ds3000_writereg(state, 0x08, val_08);
+
+	buf = ds3000_readreg(state, 0x27);
+	buf |= 0x11;
+	ds3000_writereg(state, 0x27, buf);
+	//
+	if((state->chip_ID == FeDmdId_DS302B) || (state->chip_ID == FeDmdId_DS3103))
+	{
+		buf = ds3000_readreg(state, 0x4d);
+		buf &= ~0x02;
+		ds3000_writereg(state, 0x4d, buf);
+		buf = ds3000_readreg(state, 0x30);
+		buf &= ~0x10;
+		ds3000_writereg(state, 0x30, buf);
+	}
+
+	return 0;
+}
+
+/* Put device to sleep */
+static int ds3000_sleep(struct dvb_frontend *fe)
+{
+	struct ds3000_state *state = fe->demodulator_priv;
+
+	if (state->config->set_lock_led)
+		state->config->set_lock_led(fe, 0);
+
+	dprintk("%s()\n", __func__);
 	return 0;
 }
 
 static struct dvb_frontend_ops ds3000_ops = {
 	.delsys = { SYS_DVBS, SYS_DVBS2 },
 	.info = {
-		.name = "Montage Technology DS3000",
+		.name = "Montage Technology DS3000/TS2020",
 		.frequency_min = 950000,
 		.frequency_max = 2150000,
 		.frequency_stepsize = 1011, /* kHz for QPSK frontends */
@@ -1115,7 +2119,7 @@ static struct dvb_frontend_ops ds3000_ops = {
 	.release = ds3000_release,
 
 	.init = ds3000_initfe,
-	.i2c_gate_ctrl = ds3000_i2c_gate_ctrl,
+	.sleep = ds3000_sleep,
 	.read_status = ds3000_read_status,
 	.read_ber = ds3000_read_ber,
 	.read_signal_strength = ds3000_read_signal_strength,
@@ -1127,15 +2131,14 @@ static struct dvb_frontend_ops ds3000_ops = {
 	.diseqc_send_burst = ds3000_diseqc_send_burst,
 	.get_frontend_algo = ds3000_get_algo,
 
+	.set_property = ds3000_set_property,
+	.get_property = ds3000_get_property,
 	.set_frontend = ds3000_set_frontend,
 	.tune = ds3000_tune,
 };
 
-module_param(debug, int, 0644);
-MODULE_PARM_DESC(debug, "Activates frontend debugging (default:0)");
-
 MODULE_DESCRIPTION("DVB Frontend module for Montage Technology "
-			"DS3000 hardware");
-MODULE_AUTHOR("Konstantin Dimitrov <kosio.dimitrov@gmail.com>");
+			"DS3000/TS2020 hardware");
+MODULE_AUTHOR("Konstantin Dimitrov");
 MODULE_LICENSE("GPL");
-MODULE_FIRMWARE(DS3000_DEFAULT_FIRMWARE);
+
